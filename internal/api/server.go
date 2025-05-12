@@ -9,6 +9,8 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/vaidashi/fault-tolerant-api/internal/config"
 	"github.com/vaidashi/fault-tolerant-api/pkg/logger"
+	"github.com/vaidashi/fault-tolerant-api/internal/database"
+	"github.com/vaidashi/fault-tolerant-api/internal/repository"
 )
 
 type Server struct {
@@ -16,25 +18,45 @@ type Server struct {
 	logger logger.Logger
 	router *mux.Router
 	httpServer *http.Server
+	db     *database.Database
+	orderRepo *repository.OrderRepository
 }
 
 // NewServer creates a new API server with the given configuration and logger.
-func NewServer(cfg *config.Config, l logger.Logger) *Server {
+func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 	r := mux.NewRouter()
+	db, err := database.New(cfg, logger)
 
+	if err != nil {
+		logger.Error("Failed to connect to database", "error", err)
+		// In a production app, you would handle this more gracefully
+		panic(err)
+	}
+	
+	// Run migrations
+	if err := db.RunMigrations(); err != nil {
+		logger.Error("Failed to run database migrations", "error", err)
+		panic(err)
+	}
+	
+	// Initialize repositories
+	orderRepo := repository.NewOrderRepository(db, logger)
+	
 	server := &Server{
 		router: r,
 		httpServer: &http.Server{
-			Addr: fmt.Sprintf(":%d", cfg.Port),
-			Handler: r,
-			ReadTimeout: 15 * time.Second,
+			Addr:         fmt.Sprintf(":%d", cfg.Port),
+			Handler:      r,
+			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 15 * time.Second,
-			IdleTimeout: 60 * time.Second,
+			IdleTimeout:  60 * time.Second,
 		},
-		logger: l,
-		config: cfg,
+		logger:    logger,
+		config:    cfg,
+		db:        db,
+		orderRepo: orderRepo,
 	}
-
+	
 	server.setupRoutes()
 	return server
 }
@@ -46,6 +68,9 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the server
 func (s *Server) Shutdown(ctx context.Context) error {
+	if err := s.db.Close(); err != nil {
+		s.logger.Error("Failed to close database connection", "error", err)
+	}
 	return s.httpServer.Shutdown(ctx)
 }
 
@@ -64,6 +89,8 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/orders", s.getOrdersHandler).Methods(http.MethodGet)
 	api.HandleFunc("/orders", s.createOrderHandler).Methods(http.MethodPost)
 	api.HandleFunc("/orders/{id}", s.getOrderByIDHandler).Methods(http.MethodGet)
+	api.HandleFunc("/orders/{id}", s.updateOrderHandler).Methods(http.MethodPut)
+	api.HandleFunc("/orders/{id}", s.deleteOrderHandler).Methods(http.MethodDelete)
 }
 
 // Middleware for logging requests
