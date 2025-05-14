@@ -66,9 +66,27 @@ func (d *Database) RunMigrations() error {
 
 	CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id);
 	CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+
+	-- Outbox table for message publishing
+    CREATE TABLE IF NOT EXISTS outbox_messages (
+        id SERIAL PRIMARY KEY,
+        aggregate_type VARCHAR(50) NOT NULL,
+        aggregate_id VARCHAR(50) NOT NULL,
+        event_type VARCHAR(50) NOT NULL, 
+        payload JSONB NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        processed_at TIMESTAMP,
+        processing_attempts INT NOT NULL DEFAULT 0,
+        last_error TEXT,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox_messages(status);
+    CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON outbox_messages(aggregate_type, aggregate_id);
 	`
 
 	_, err := d.DB.Exec(schema)
+	
 	if err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}

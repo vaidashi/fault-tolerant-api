@@ -196,3 +196,73 @@ func (r *OrderRepository) GetByCustomerID(ctx context.Context, customerID string
 	return orders, nil
 }
 
+// BeginTx starts a new transaction
+func (r *OrderRepository) BeginTx(ctx context.Context) (*sql.Tx, error) {
+	tx, err := r.db.DB.BeginTx(ctx, nil)
+
+	if err != nil {
+		r.logger.Error("Failed to begin transaction", "error", err)
+		return nil, fmt.Errorf("%w: %v", ErrDatabase, err)
+	}
+	return tx, nil
+}
+
+// CreateInTx creates a new order within a transaction
+func (r *OrderRepository) CreateInTx(tx *sql.Tx, order *models.Order) error {
+	query := `
+		INSERT INTO orders (id, customer_id, amount, status, description, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`
+
+	_, err := tx.Exec(
+		query,
+		order.ID,
+		order.CustomerID,
+		order.Amount,
+		order.Status,
+		order.Description,
+		order.CreatedAt,
+		order.UpdatedAt,
+	)
+
+	if err != nil {
+		return fmt.Errorf("Failed to create order in transaction: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateInTx updates an existing order within a transaction
+func (r *OrderRepository) UpdateInTx(tx *sql.Tx, order *models.Order) error {
+	query := `
+		UPDATE orders
+		SET customer_id = $1, amount = $2, status = $3, description = $4, updated_at = $5
+		WHERE id = $6
+	`
+
+	result, err := tx.Exec(
+		query,
+		order.CustomerID,
+		order.Amount,
+		order.Status,
+		order.Description,
+		models.GetCurrentTime(), // Update the updated_at time
+		order.ID,
+	)
+
+	if err != nil {
+		return fmt.Errorf("Failed to update order in transaction: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+
+	if err != nil {
+		return fmt.Errorf("Failed to get rows affected in transaction: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
