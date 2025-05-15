@@ -11,6 +11,8 @@ import (
 	"github.com/vaidashi/fault-tolerant-api/pkg/logger"
 	"github.com/vaidashi/fault-tolerant-api/internal/database"
 	"github.com/vaidashi/fault-tolerant-api/internal/repository"
+	"github.com/vaidashi/fault-tolerant-api/internal/service"
+	"github.com/vaidashi/fault-tolerant-api/internal/outbox"	
 )
 
 type Server struct {
@@ -20,6 +22,9 @@ type Server struct {
 	httpServer *http.Server
 	db     *database.Database
 	orderRepo *repository.OrderRepository
+	outboxRepo *repository.OutboxRepository
+	outboxProcessor *outbox.Processor
+	orderService *service.OrderService
 }
 
 // NewServer creates a new API server with the given configuration and logger.
@@ -41,6 +46,24 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 	
 	// Initialize repositories
 	orderRepo := repository.NewOrderRepository(db, logger)
+	outboxRepo := repository.NewOutboxRepository(db, logger)
+
+	// Initialize services
+	orderService := service.NewOrderService(orderRepo, outboxRepo, logger)
+
+	// Initialize outbox processor
+	processorConfig := &outbox.ProcessorConfig{
+		PollingInterval: 5 * time.Second,
+		BatchSize:       10,
+		MaxRetries:      3,
+	}
+    outboxProcessor := outbox.NewProcessor(outboxRepo, logger, processorConfig)
+
+	// Register message handlers
+    loggingHandler := outbox.NewLoggingHandler(logger)
+    outboxProcessor.RegisterHandler("order_created", loggingHandler)
+    outboxProcessor.RegisterHandler("order_updated", loggingHandler)
+    outboxProcessor.RegisterHandler("order_status_changed", loggingHandler)
 	
 	server := &Server{
 		router: r,
@@ -55,9 +78,15 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 		config:    cfg,
 		db:        db,
 		orderRepo: orderRepo,
+		outboxRepo: outboxRepo,
+		orderService: orderService,
+		outboxProcessor: outboxProcessor,
 	}
 	
 	server.setupRoutes()
+	// Start the outbox processor
+	outboxProcessor.Start()
+
 	return server
 }
 
@@ -68,9 +97,13 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the server
 func (s *Server) Shutdown(ctx context.Context) error {
+	// Stop the outbox processor
+	s.outboxProcessor.Stop()
+
 	if err := s.db.Close(); err != nil {
 		s.logger.Error("Failed to close database connection", "error", err)
 	}
+
 	return s.httpServer.Shutdown(ctx)
 }
 
@@ -91,6 +124,7 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/orders/{id}", s.getOrderByIDHandler).Methods(http.MethodGet)
 	api.HandleFunc("/orders/{id}", s.updateOrderHandler).Methods(http.MethodPut)
 	api.HandleFunc("/orders/{id}", s.deleteOrderHandler).Methods(http.MethodDelete)
+	 api.HandleFunc("/orders/{id}/status", s.updateOrderStatusHandler).Methods(http.MethodPatch)
 }
 
 // Middleware for logging requests

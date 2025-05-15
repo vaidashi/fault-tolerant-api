@@ -7,7 +7,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/jmoiron/sqlx"
+    // "github.com/jmoiron/sqlx"
     "github.com/vaidashi/fault-tolerant-api/internal/database"
     "github.com/vaidashi/fault-tolerant-api/internal/models"
     "github.com/vaidashi/fault-tolerant-api/pkg/logger"
@@ -190,7 +190,7 @@ func (r *OutboxRepository) GetMessage(ctx context.Context, id int64) (*models.Ou
 }
 
 // CreateInTx creates a new outbox message within a transaction
-func (r *OutboxRepository) CreateInTx(tx *sqlx.Tx, message *models.OutboxMessage) error {
+func (r *OutboxRepository) CreateInTx(tx *sql.Tx, message *models.OutboxMessage) error {
 	query := `
 		INSERT INTO outbox_messages (
 			aggregate_type, aggregate_id, event_type, payload, 
