@@ -83,7 +83,7 @@ func (s *Server) getOrdersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	offset := (page - 1) * pageSize
-	orders, err := s.orderRepo.GetAll(ctx, pageSize, offset)
+	orders, err := s.orderService.GetAllOrders(ctx, pageSize, offset)
 
 	if err != nil {
 		s.logger.Error("Failed to get orders", "error", err)
@@ -91,7 +91,7 @@ func (s *Server) getOrdersHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	totalCount, err := s.orderRepo.Count(ctx)
+	totalCount, err := s.orderService.CountOrders(ctx)
 
 	if err != nil {
 		s.logger.Error("Failed to count orders", "error", err)
@@ -134,8 +134,7 @@ func (s *Server) createOrderHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	order := models.NewOrder(req.CustomerID, req.Amount, req.Description)
-	err := s.orderRepo.Create(ctx, order)
+	order, err := s.orderService.CreateOrder(ctx, req.CustomerID, req.Amount, req.Description)
 
 	if err != nil {
 		s.logger.Error("Failed to create order", "error", err)
@@ -152,7 +151,7 @@ func (s *Server) getOrderByIDHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
 	
-	order, err := s.orderRepo.GetByID(ctx, id)
+	order, err := s.orderService.GetOrder(ctx, id)
 
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
@@ -173,18 +172,6 @@ func (s *Server) updateOrderHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
 	
-	existingOrder, err := s.orderRepo.GetByID(ctx, id)
-
-	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			s.respondWithError(w, http.StatusNotFound, "Order not found")
-			return
-		}
-		s.logger.Error("Failed to get order for update", "error", err, "orderID", id)
-		s.respondWithError(w, http.StatusInternalServerError, "Failed to retrieve order")
-		return
-	}
-	
 	// Parse and validate the request
 	var req OrderRequest
 	decoder := json.NewDecoder(r.Body)
@@ -195,32 +182,74 @@ func (s *Server) updateOrderHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	if req.CustomerID != "" {
-		existingOrder.CustomerID = req.CustomerID
-	}
-	
-	if req.Amount > 0 {
-		existingOrder.Amount = req.Amount
-	}
-	
-	if req.Description != "" {
-		existingOrder.Description = req.Description
-	}
-	
-	if req.Status != "" {
-		// In a real application, you'd want to validate the status transition
-		existingOrder.Status = req.Status
-	}
-	
-	err = s.orderRepo.Update(ctx, existingOrder)
+	order, err := s.orderService.UpdateOrder(ctx, id, req.CustomerID, req.Amount, req.Description)
 
 	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			s.respondWithError(w, http.StatusNotFound, "Order not found")
+			return
+		}
 		s.logger.Error("Failed to update order", "error", err, "orderID", id)
 		s.respondWithError(w, http.StatusInternalServerError, "Failed to update order")
 		return
 	}
 	
-	s.respondWithJSON(w, http.StatusOK, ApiResponse{Success: true, Data: existingOrder})
+	s.respondWithJSON(w, http.StatusOK, ApiResponse{Success: true, Data: order})
+}
+
+// updateOrderStatusHandler updates an order's status
+func (s *Server) updateOrderStatusHandler(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+    vars := mux.Vars(r)
+    id := vars["id"]
+    
+    // Parse the status from the request
+    var statusRequest struct {
+        Status string `json:"status"`
+    }
+    
+    decoder := json.NewDecoder(r.Body)
+
+    if err := decoder.Decode(&statusRequest); err != nil {
+        s.respondWithError(w, http.StatusBadRequest, "Invalid request payload")
+        return
+    }
+    defer r.Body.Close()
+    
+    if statusRequest.Status == "" {
+        s.respondWithError(w, http.StatusBadRequest, "Status is required")
+        return
+    }
+    
+    // Validate the status (in a real app, you'd have more rigorous validation)
+    validStatuses := map[string]bool{
+        string(models.OrderStatusPending):   true,
+        string(models.OrderStatusApproved):  true,
+        string(models.OrderStatusRejected):  true,
+        string(models.OrderStatusShipped):   true,
+        string(models.OrderStatusDelivered): true,
+        string(models.OrderStatusCancelled): true,
+    }
+    
+    if !validStatuses[statusRequest.Status] {
+        s.respondWithError(w, http.StatusBadRequest, "Invalid status value")
+        return
+    }
+    
+    
+    order, err := s.orderService.UpdateOrderStatus(ctx, id, statusRequest.Status)
+    
+	if err != nil {
+        if errors.Is(err, repository.ErrNotFound) {
+            s.respondWithError(w, http.StatusNotFound, "Order not found")
+            return
+        }
+        s.logger.Error("Failed to update order status", "error", err, "orderID", id)
+        s.respondWithError(w, http.StatusInternalServerError, "Failed to update order status")
+        return
+    }
+    
+    s.respondWithJSON(w, http.StatusOK, ApiResponse{Success: true, Data: order})
 }
 
 // deleteOrderHandler deletes an order
@@ -229,7 +258,7 @@ func (s *Server) deleteOrderHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
 	
-	err := s.orderRepo.Delete(ctx, id)
+	err := s.orderService.DeleteOrder(ctx, id)
 
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {

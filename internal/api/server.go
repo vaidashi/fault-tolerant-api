@@ -57,8 +57,7 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 		BatchSize:       10,
 		MaxRetries:      3,
 	}
-    outboxProcessor := outbox.NewProcessor(outboxRepo, logger, processorConfig)
-
+	outboxProcessor := outbox.NewProcessor(outboxRepo, logger, processorConfig)
 	// Register message handlers
     loggingHandler := outbox.NewLoggingHandler(logger)
     outboxProcessor.RegisterHandler("order_created", loggingHandler)

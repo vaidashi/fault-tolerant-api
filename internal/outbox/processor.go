@@ -40,23 +40,23 @@ type ProcessorConfig struct {
 
 // NewProcessor creates a new Processor
 func NewProcessor(
-	outboxRepo *repository.OutboxRepository,
-	config ProcessorConfig,
-	logger logger.Logger,
+    outboxRepo *repository.OutboxRepository,
+    logger logger.Logger,
+    config *ProcessorConfig,
 ) *Processor {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	return &Processor{
-		outboxRepo:     outboxRepo,
-		handlers:       make(map[string]MessageHandler),
-		pollingInterval: config.PollingInterval,
-		batchSize:      config.BatchSize,
-		maxRetries:     config.MaxRetries,
-		logger:         logger,
-		ctx:           ctx,
-		cancel:        cancel,
-		running: 	false,
-	}
+    ctx, cancel := context.WithCancel(context.Background())
+    
+    return &Processor{
+        outboxRepo:      outboxRepo,
+        handlers:        make(map[string]MessageHandler),
+        pollingInterval: config.PollingInterval,
+        batchSize:       config.BatchSize,
+        maxRetries:      config.MaxRetries,
+        logger:          logger,
+        ctx:             ctx,
+        cancel:          cancel,
+        running:         false,
+    }
 }
 
 // RegisterHandler registers a message handler for a specific event type
