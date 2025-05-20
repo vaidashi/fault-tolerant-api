@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -11,6 +12,7 @@ type Config struct {
 	LogLevel string
 	Env 	string
 	DB DBConfig
+	Kafka KafkaConfig
 }
 
 // DBConfig holds the database configuration
@@ -21,6 +23,13 @@ type DBConfig struct {
 	Password string
 	Name     string
 	SSLMode string
+}
+
+// KafkaConfig holds the Kafka configuration
+type KafkaConfig struct {
+	Brokers []string
+	OrdersTopic string
+	ConsumerGroup string
 }
 
 // getEnv retrieves the value of an environment variable or returns a default value if not set.
@@ -57,6 +66,11 @@ func Load() (*Config, error) {
 			Password: getEnv("DB_PASSWORD", "postgres"),
 			Name:     getEnv("DB_NAME", "ftapi"),
 			SSLMode:  getEnv("DB_SSLMODE", "disable"),
+		},
+		Kafka: KafkaConfig{
+			Brokers:      strings.Split(getEnv("KAFKA_BROKERS", "localhost:9092"), ","),
+			OrdersTopic:  getEnv("KAFKA_ORDERS_TOPIC", "orders"),
+			ConsumerGroup: getEnv("KAFKA_CONSUMER_GROUP", "orders-consumer"),
 		},
 	}, nil
 }
