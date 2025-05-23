@@ -3,7 +3,6 @@ package outbox
 import (
 	"context"
 	"fmt"
-	"encoding/json"
 
 	"github.com/vaidashi/fault-tolerant-api/internal/models"
 	"github.com/vaidashi/fault-tolerant-api/pkg/kafka"
@@ -39,7 +38,7 @@ func (h *KafkaHandler) HandleMessage(ctx context.Context, message *models.Outbox
     
     // Send the message to Kafka
     err := h.producer.SendMessage(ctx, h.topic, key, message.Payload)
-	
+
     if err != nil {
         h.logger.Error("Failed to publish message to Kafka", 
             "error", err, 

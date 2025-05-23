@@ -12,7 +12,9 @@ import (
 	"github.com/vaidashi/fault-tolerant-api/internal/database"
 	"github.com/vaidashi/fault-tolerant-api/internal/repository"
 	"github.com/vaidashi/fault-tolerant-api/internal/service"
-	"github.com/vaidashi/fault-tolerant-api/internal/outbox"	
+	"github.com/vaidashi/fault-tolerant-api/internal/outbox"
+	"github.com/vaidashi/fault-tolerant-api/internal/handlers"
+	"github.com/vaidashi/fault-tolerant-api/pkg/kafka"
 )
 
 type Server struct {
@@ -25,6 +27,8 @@ type Server struct {
 	outboxRepo *repository.OutboxRepository
 	outboxProcessor *outbox.Processor
 	orderService *service.OrderService
+	kafkaProducer *kafka.Producer
+	kafkaConsumer *kafka.Consumer
 }
 
 // NewServer creates a new API server with the given configuration and logger.
@@ -48,6 +52,14 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 	orderRepo := repository.NewOrderRepository(db, logger)
 	outboxRepo := repository.NewOutboxRepository(db, logger)
 
+	// Initialize Kafka producer
+    kafkaProducer, err := kafka.NewProducer(cfg.Kafka.Brokers, logger)
+
+    if err != nil {
+        logger.Error("Failed to create Kafka producer", "error", err)
+        panic(err)
+    }
+
 	// Initialize services
 	orderService := service.NewOrderService(orderRepo, outboxRepo, logger)
 
@@ -59,10 +71,28 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 	}
 	outboxProcessor := outbox.NewProcessor(outboxRepo, logger, processorConfig)
 	// Register message handlers
-    loggingHandler := outbox.NewLoggingHandler(logger)
-    outboxProcessor.RegisterHandler("order_created", loggingHandler)
-    outboxProcessor.RegisterHandler("order_updated", loggingHandler)
-    outboxProcessor.RegisterHandler("order_status_changed", loggingHandler)
+    kafkaHandler := outbox.NewKafkaHandler(kafkaProducer, cfg.Kafka.OrdersTopic, logger)
+    outboxProcessor.RegisterHandler("order_created", kafkaHandler)
+    outboxProcessor.RegisterHandler("order_updated", kafkaHandler)
+    outboxProcessor.RegisterHandler("order_status_changed", kafkaHandler)
+
+	// Initialize Kafka consumer
+    consumerConfig := &kafka.ConsumerConfig{
+        Brokers:       cfg.Kafka.Brokers,
+        Topics:        []string{cfg.Kafka.OrdersTopic},
+        ConsumerGroup: cfg.Kafka.ConsumerGroup,
+    }
+
+	kafkaConsumer, err := kafka.NewConsumer(consumerConfig, logger)
+
+    if err != nil {
+        logger.Error("Failed to create Kafka consumer", "error", err)
+        panic(err)
+    }
+
+	// Register event handlers for Kafka consumer
+    orderEventsHandler := handlers.NewOrderEventsHandler(logger)
+    kafkaConsumer.RegisterHandler(cfg.Kafka.OrdersTopic, orderEventsHandler)
 	
 	server := &Server{
 		router: r,
@@ -80,11 +110,19 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 		outboxRepo: outboxRepo,
 		orderService: orderService,
 		outboxProcessor: outboxProcessor,
+		kafkaProducer: kafkaProducer,
+		kafkaConsumer: kafkaConsumer,
 	}
 	
 	server.setupRoutes()
 	// Start the outbox processor
 	outboxProcessor.Start()
+
+	// Start the Kafka consumer
+    if err := kafkaConsumer.Start(); err != nil {
+        logger.Error("Failed to start Kafka consumer", "error", err)
+        // Non-fatal error, continue without the consumer
+    }
 
 	return server
 }
@@ -97,13 +135,28 @@ func (s *Server) Start() error {
 // Shutdown gracefully shuts down the server
 func (s *Server) Shutdown(ctx context.Context) error {
 	// Stop the outbox processor
-	s.outboxProcessor.Stop()
-
-	if err := s.db.Close(); err != nil {
-		s.logger.Error("Failed to close database connection", "error", err)
-	}
-
-	return s.httpServer.Shutdown(ctx)
+    s.outboxProcessor.Stop()
+    
+    // Stop the Kafka consumer
+    if s.kafkaConsumer != nil {
+        if err := s.kafkaConsumer.Stop(); err != nil {
+            s.logger.Error("Error stopping Kafka consumer", "error", err)
+        }
+    }
+    
+    // Close the Kafka producer
+    if s.kafkaProducer != nil {
+        if err := s.kafkaProducer.Close(); err != nil {
+            s.logger.Error("Error closing Kafka producer", "error", err)
+        }
+    }
+    
+    // Close database connection
+    if err := s.db.Close(); err != nil {
+        s.logger.Error("Error closing database connection", "error", err)
+    }
+    
+    return s.httpServer.Shutdown(ctx)
 }
 
 // setupRoutes configures all the routes for our API

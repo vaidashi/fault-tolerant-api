@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/vaidashi/fault-tolerant-api/internal/models"
@@ -43,26 +44,36 @@ type Health struct {
 // healthCheckHandler handles the health check endpoint
 func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+    
+    health := map[string]string{
+        "status":    "ok",
+        "version":   "0.1.0",
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    // Check database connectivity
+    dbStatus := "connected"
 
-	err := s.db.Ping(ctx)
-
-	if err != nil {
-		s.logger.Error("Health check failed. Database ping failed", "error", err)
-		s.respondWithJSON(w, http.StatusServiceUnavailable, ApiResponse{
-			Success: false,
-			Error:   "Service unavailable, database not reachable",
-		})
-		return
-	}
-
-	s.respondWithJSON(w, http.StatusOK, ApiResponse{
-		Success: true,
-		Data: map[string]string{
-			"status": "ok",
-			"version": "0.1.0",
-			"database": "connected",
-		},
-	})
+    if err := s.db.Ping(ctx); err != nil {
+        dbStatus = "disconnected"
+        health["status"] = "degraded"
+        s.logger.Error("Health check: database ping error", "error", err)
+    }
+    health["database"] = dbStatus
+    
+    // For Kafka, we can only report if it's configured
+    // Real Kafka health checking would require more complex logic
+    kafkaStatus := "configured"
+	
+    if s.kafkaProducer == nil {
+        kafkaStatus = "not_configured"
+    }
+    health["kafka"] = kafkaStatus
+    
+    s.respondWithJSON(w, http.StatusOK, ApiResponse{
+        Success: true,
+        Data:    health,
+    })
 }
 
 // getOrdersHandler returns a list of orders

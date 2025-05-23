@@ -32,7 +32,7 @@ type OutboxMessage struct {
 type OutboxMessageEvent struct {
 	EventType string          `json:"event_type"`
 	EventID   string          `json:"event_id"`
-	AggregateId string          `json:"aggregate_id"`
+	AggregateID string          `json:"aggregate_id"`
 	OccurredAt time.Time     `json:"occurred_at"`
 	Data interface{} `json:"data"`
 }
@@ -42,7 +42,7 @@ func NewOrderCreatedEvent(order *Order) (*OutboxMessage, error) {
 	event := OutboxMessageEvent{
 		EventType: "order_created",
 		EventID: GenerateID("evt"),
-		AggregateId: order.ID,
+		AggregateID: order.ID,
 		OccurredAt: time.Now().UTC(),
 		Data: order,
 	}
@@ -69,7 +69,7 @@ func NewOrderUpdatedEvent(order *Order) (*OutboxMessage, error) {
 	event := OutboxMessageEvent{
 		EventType: "order_updated",
 		EventID: GenerateID("evt"),
-		AggregateId: order.ID,
+		AggregateID: order.ID,
 		OccurredAt: time.Now().UTC(),
 		Data: order,
 	}
@@ -96,7 +96,7 @@ func NewOrderStatusChangedEvent(order *Order, oldStatus string) (*OutboxMessage,
 	event := OutboxMessageEvent{
 		EventType: "order_status_changed",
 		EventID: GenerateID("evt"),
-		AggregateId: order.ID,
+		AggregateID: order.ID,
 		OccurredAt: time.Now().UTC(),
 		Data: map[string]interface{}{
 			"old_status": oldStatus,

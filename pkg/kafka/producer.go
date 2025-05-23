@@ -72,5 +72,5 @@ func (p *Producer) SendMessage(ctx context.Context, topic string, key string, va
 
 // Close closes the producer
 func (p *Producer) Close() error {
-	return &p.producer.Close()
+	return p.producer.Close()
 }
