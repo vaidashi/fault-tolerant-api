@@ -83,6 +83,26 @@ func (d *Database) RunMigrations() error {
 
     CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox_messages(status);
     CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON outbox_messages(aggregate_type, aggregate_id);
+
+	-- Dead letter queue for failed messages
+    CREATE TABLE IF NOT EXISTS dead_letter_messages (
+        id SERIAL PRIMARY KEY,
+        original_message_id BIGINT NOT NULL,
+        aggregate_type VARCHAR(50) NOT NULL,
+        aggregate_id VARCHAR(50) NOT NULL,
+        event_type VARCHAR(50) NOT NULL,
+        payload JSONB NOT NULL,
+        error_message TEXT NOT NULL,
+        failure_reason VARCHAR(100) NOT NULL,
+        retry_count INT NOT NULL DEFAULT 0,
+        last_retry_at TIMESTAMP,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        resolved_at TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dlq_status ON dead_letter_messages(status);
+    CREATE INDEX IF NOT EXISTS idx_dlq_aggregate ON dead_letter_messages(aggregate_type, aggregate_id);
 	`
 
 	_, err := d.DB.Exec(schema)
