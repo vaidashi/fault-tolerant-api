@@ -9,6 +9,7 @@ import (
 	"github.com/vaidashi/fault-tolerant-api/internal/models"
 	"github.com/vaidashi/fault-tolerant-api/internal/repository"
 	"github.com/vaidashi/fault-tolerant-api/pkg/logger"
+	"github.com/vaidashi/fault-tolerant-api/pkg/retry"
 )
 
 // MessageHandler defines the interface for handling outbox messages
@@ -19,10 +20,13 @@ type MessageHandler interface {
 // Processor is responsible for processing outbox messages
 type Processor struct {
 	outboxRepo   *repository.OutboxRepository
+	dlqRepo  *repository.DeadLetterRepository
 	handlers map[string]MessageHandler
 	pollingInterval time.Duration
 	batchSize      int
 	maxRetries      int
+	backoffStrategy retry.BackoffStrategy
+	useDLQ bool
 	logger         logger.Logger
 	ctx 		 context.Context
 	cancel context.CancelFunc
@@ -36,22 +40,34 @@ type ProcessorConfig struct {
 	PollingInterval time.Duration
 	BatchSize      int
 	MaxRetries     int
+	BackoffStrategy retry.BackoffStrategy
+	UseDLQ		 bool
 }
 
 // NewProcessor creates a new Processor
 func NewProcessor(
     outboxRepo *repository.OutboxRepository,
+	dlqRepo *repository.DeadLetterRepository,
     logger logger.Logger,
     config *ProcessorConfig,
 ) *Processor {
     ctx, cancel := context.WithCancel(context.Background())
+	// Set default values if not provided
+	backoffStrategy := config.BackoffStrategy
+
+	if backoffStrategy == nil {
+		backoffStrategy = retry.NewDefaultExponentialBackoff()
+	}
     
     return &Processor{
         outboxRepo:      outboxRepo,
+		dlqRepo: dlqRepo,
         handlers:        make(map[string]MessageHandler),
         pollingInterval: config.PollingInterval,
         batchSize:       config.BatchSize,
         maxRetries:      config.MaxRetries,
+		backoffStrategy: backoffStrategy,
+		useDLQ:         config.UseDLQ,
         logger:          logger,
         ctx:             ctx,
         cancel:          cancel,
@@ -171,47 +187,86 @@ func (p *Processor) processMessage(ctx context.Context, msg *models.OutboxMessag
         if err := p.outboxRepo.MarkAsFailed(ctx, msg.ID, errorMsg); err != nil {
             p.logger.Error("Failed to mark message as failed", "error", err, "messageID", msg.ID)
         }
+
+		// Send to DLQ if enabled
+		if p.useDLQ && p.dlqRepo != nil {
+			dlqMsg := models.NewDeadLetterMessage(msg, errorMsg, "No handler available")
+
+			if err := p.dlqRepo.Create(ctx, dlqMsg); err != nil {
+				p.logger.Error("Failed to send message to dead letter queue", 
+					"error", err, 
+					"messageID", msg.ID, 
+				)
+			} 
+		}
         
         return fmt.Errorf(errorMsg)
     }
     
-    // Handle the message
-    err := handler.HandleMessage(ctx, msg)
+    // Configure retry options
+	retryConfig := &retry.RetryConfig{
+		MaxAttempts: p.maxRetries,
+		BackoffStrategy: p.backoffStrategy,
+		Logger: p.logger,
+	}
 
-    if err != nil {
-        // Check if we've reached max retries
-        if msg.ProcessingAttempts >= p.maxRetries {
-            errorMsg := fmt.Sprintf("max retries reached: %s", err.Error())
-            p.logger.Error(errorMsg, 
-                "messageID", msg.ID, 
-                "attempts", msg.ProcessingAttempts)
-            
-            // Mark as failed
-            if markErr := p.outboxRepo.MarkAsFailed(ctx, msg.ID, errorMsg); markErr != nil {
-                p.logger.Error("Failed to mark message as failed", "error", markErr, "messageID", msg.ID)
-            }
-            
-            return fmt.Errorf("message failed after %d attempts: %w", msg.ProcessingAttempts, err)
-        }
-        
-        // Return without updating status so it will be retried
-        p.logger.Warn("Message processing failed, will retry", 
-            "error", err, 
-            "messageID", msg.ID, 
-            "attempt", msg.ProcessingAttempts)
-        return err
-    }
-    
-    // Mark as completed
-    if err := p.outboxRepo.MarkAsCompleted(ctx, msg.ID); err != nil {
-        p.logger.Error("Failed to mark message as completed", "error", err, "messageID", msg.ID)
-        return fmt.Errorf("failed to mark message as completed: %w", err)
-    }
-    
-    p.logger.Info("Successfully processed message", 
-        "messageID", msg.ID, 
-        "aggregateID", msg.AggregateID, 
-        "eventType", msg.EventType)
-    
-    return nil
+	// Retry function to handle message processing
+	retryFunc := func() error {
+		return handler.HandleMessage(ctx, msg)
+	}
+
+	// Define the discard function to handle failures
+	discardFunc := func(err error) error {
+		// Mark as failed in outbox
+		failedErr := fmt.Sprintf("Failed after %d retries: %v", p.maxRetries, err)
+
+		if markErr := p.outboxRepo.MarkAsFailed(ctx, msg.ID, failedErr); markErr != nil {
+			p.logger.Error("Failed to mark message as failed in outbox", 
+				"error", markErr, 
+				"messageID", msg.ID,
+			)
+		}
+		// Send to DLQ if enabled
+		if p.useDLQ && p.dlqRepo != nil {
+			dlqMsg := models.NewDeadLetterMessage(msg, failedErr, "Max retries exceeded")
+
+			if dlqErr := p.dlqRepo.Create(ctx, dlqMsg); dlqErr != nil {
+				p.logger.Error("Failed to send message to dead letter queue", 
+					"error", dlqErr, 
+					"messageID", msg.ID, 
+				)
+			} else {
+				p.logger.Info("Message sent to dead letter queue", 
+					"messageID", msg.ID, 
+					"dlqID", dlqMsg.ID,
+				)
+			}
+		}
+
+		return fmt.Errorf("message failed after %d attempts and was discarded: %w", p.maxRetries, err)
+	}
+
+	// Execute with retry and discard policy
+	err := retry.RetryWithDiscard(ctx, retryFunc, retryConfig, discardFunc)
+	
+	if err != nil {
+		p.logger.Error("Message processing failed after retries", 
+			"error", err, 
+			"messageID", msg.ID, 
+			"attempts", msg.ProcessingAttempts)
+		return err
+	}
+	
+	// Mark as completed
+	if err := p.outboxRepo.MarkAsCompleted(ctx, msg.ID); err != nil {
+		p.logger.Error("Failed to mark message as completed", "error", err, "messageID", msg.ID)
+		return fmt.Errorf("failed to mark message as completed: %w", err)
+	}
+	
+	p.logger.Info("Successfully processed message", 
+		"messageID", msg.ID, 
+		"aggregateID", msg.AggregateID, 
+		"eventType", msg.EventType)
+	
+	return nil
 }
