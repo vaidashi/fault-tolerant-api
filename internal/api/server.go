@@ -15,6 +15,7 @@ import (
 	"github.com/vaidashi/fault-tolerant-api/internal/outbox"
 	"github.com/vaidashi/fault-tolerant-api/internal/handlers"
 	"github.com/vaidashi/fault-tolerant-api/pkg/kafka"
+	"github.com/vaidashi/fault-tolerant-api/pkg/retry"
 )
 
 type Server struct {
@@ -29,6 +30,8 @@ type Server struct {
 	orderService *service.OrderService
 	kafkaProducer *kafka.Producer
 	kafkaConsumer *kafka.Consumer
+	dlqRepo *repository.DeadLetterRepository
+	deadLetterProcessor *outbox.DeadLetterProcessor
 }
 
 // NewServer creates a new API server with the given configuration and logger.
@@ -51,6 +54,7 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 	// Initialize repositories
 	orderRepo := repository.NewOrderRepository(db, logger)
 	outboxRepo := repository.NewOutboxRepository(db, logger)
+	dlqRepo := repository.NewDeadLetterRepository(db, logger)
 
 	// Initialize Kafka producer
     kafkaProducer, err := kafka.NewProducer(cfg.Kafka.Brokers, logger)
@@ -64,17 +68,44 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 	orderService := service.NewOrderService(orderRepo, outboxRepo, logger)
 
 	// Initialize outbox processor
+	backoffStrategy := retry.NewDefaultExponentialBackoff()
 	processorConfig := &outbox.ProcessorConfig{
 		PollingInterval: 5 * time.Second,
 		BatchSize:       10,
 		MaxRetries:      3,
+		BackoffStrategy: backoffStrategy,
+		UseDLQ:          true, 
 	}
-	outboxProcessor := outbox.NewProcessor(outboxRepo, logger, processorConfig)
+	outboxProcessor := outbox.NewProcessor(outboxRepo, dlqRepo, logger, processorConfig)
+
+	// Create the dead letter processor
+	    // Initialize dead letter processor
+    dlqProcessorConfig := &outbox.DeadLetterProcessorConfig{
+        PollingInterval: 30 * time.Second, // Process less frequently than outbox
+        BatchSize:       5,
+        MaxRetries:      5,                // More retries for DLQ processing
+        BackoffStrategy: &retry.ExponentialBackoff{
+            InitialInterval: 1 * time.Second,
+            MaxInterval:     2 * time.Minute,
+            Multiplier:      2.0,
+            JitterFactor:    0.1,
+        },
+    }
+
+    deadLetterProcessor := outbox.NewDeadLetterProcessor(dlqRepo, outboxRepo, logger, dlqProcessorConfig)
+    
 	// Register message handlers
     kafkaHandler := outbox.NewKafkaHandler(kafkaProducer, cfg.Kafka.OrdersTopic, logger)
-    outboxProcessor.RegisterHandler("order_created", kafkaHandler)
+    
+	// Register handlers for different event types for outbox processor
+	outboxProcessor.RegisterHandler("order_created", kafkaHandler)
     outboxProcessor.RegisterHandler("order_updated", kafkaHandler)
     outboxProcessor.RegisterHandler("order_status_changed", kafkaHandler)
+
+	// For dead letter queue (same handlers)
+    deadLetterProcessor.RegisterHandler("order_created", kafkaHandler)
+    deadLetterProcessor.RegisterHandler("order_updated", kafkaHandler)
+    deadLetterProcessor.RegisterHandler("order_status_changed", kafkaHandler)
 
 	// Initialize Kafka consumer
     consumerConfig := &kafka.ConsumerConfig{
@@ -112,11 +143,14 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 		outboxProcessor: outboxProcessor,
 		kafkaProducer: kafkaProducer,
 		kafkaConsumer: kafkaConsumer,
+		dlqRepo: dlqRepo,
+		deadLetterProcessor: deadLetterProcessor,
 	}
 	
 	server.setupRoutes()
-	// Start the outbox processor
+	// Start the processors
 	outboxProcessor.Start()
+	deadLetterProcessor.Start()
 
 	// Start the Kafka consumer
     if err := kafkaConsumer.Start(); err != nil {
@@ -134,8 +168,9 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the server
 func (s *Server) Shutdown(ctx context.Context) error {
-	// Stop the outbox processor
+	// Stop the processors
     s.outboxProcessor.Stop()
+	s.deadLetterProcessor.Stop()
     
     // Stop the Kafka consumer
     if s.kafkaConsumer != nil {
@@ -170,13 +205,19 @@ func (s *Server) setupRoutes() {
 	// Health check endpoint
 	api.HandleFunc("/health", s.healthCheckHandler).Methods(http.MethodGet)
 	
-	// Example resource endpoints
+	// Resource endpoints
 	api.HandleFunc("/orders", s.getOrdersHandler).Methods(http.MethodGet)
 	api.HandleFunc("/orders", s.createOrderHandler).Methods(http.MethodPost)
 	api.HandleFunc("/orders/{id}", s.getOrderByIDHandler).Methods(http.MethodGet)
 	api.HandleFunc("/orders/{id}", s.updateOrderHandler).Methods(http.MethodPut)
 	api.HandleFunc("/orders/{id}", s.deleteOrderHandler).Methods(http.MethodDelete)
-	 api.HandleFunc("/orders/{id}/status", s.updateOrderStatusHandler).Methods(http.MethodPatch)
+	api.HandleFunc("/orders/{id}/status", s.updateOrderStatusHandler).Methods(http.MethodPatch)
+
+	 // Admin API for monitoring and management
+    admin := s.router.PathPrefix("/api/v1/admin").Subrouter()
+    admin.HandleFunc("/dead-letters", s.getDeadLettersHandler).Methods(http.MethodGet)
+    admin.HandleFunc("/dead-letters/{id}/retry", s.retryDeadLetterHandler).Methods(http.MethodPost)
+    admin.HandleFunc("/dead-letters/{id}/discard", s.discardDeadLetterHandler).Methods(http.MethodPost)
 }
 
 // Middleware for logging requests

@@ -32,6 +32,8 @@ type PaginationResponse struct {
 	TotalCount int         `json:"total_count"`
 	Page       int         `json:"page"`
 	PageSize   int         `json:"page_size"`
+	Offset     int         `json:"offset,omitempty"`
+	Status     string      `json:"status,omitempty"`
 }
 
 // Health represents the health check response
