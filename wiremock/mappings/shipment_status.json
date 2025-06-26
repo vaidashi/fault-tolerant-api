@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/api/shipments/([^/]+)"
+  },
+  "response": {
+    "status": "{{randomValue request.path.1 'success:200' 'timeout:408' 'error:500' 'success:200' 'success:200' 'success:200'}}",
+    "fixedDelayMilliseconds": "{{randomInt 50 300}}",
+    "jsonBody": {
+      "{{#eq response.status '200'}}shipment_id{{else}}error{{/eq}}": "{{#eq response.status '200'}}{{request.path.1}}{{else}}Service temporarily unavailable{{/eq}}",
+      "{{#eq response.status '200'}}status{{else}}code{{/eq}}": "{{#eq response.status '200'}}{{randomValue 'PENDING' 'SHIPPED' 'DELIVERED' 'PENDING'}}{{else}}{{#eq response.status '408'}}TIMEOUT{{else}}INTERNAL_ERROR{{/eq}}{{/eq}}",
+      "{{#eq response.status '200'}}updated_at{{/eq}}": "{{#eq response.status '200'}}{{now format='yyyy-MM-dd''T''HH:mm:ss.SSSZ'}}{{/eq}}",
+      "timestamp": "{{now format='yyyy-MM-dd''T''HH:mm:ss.SSSZ'}}"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

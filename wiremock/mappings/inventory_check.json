@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/api/inventory/([^/]+)"
+  },
+  "response": {
+    "status": "{{randomValue request.path.1 'success:200' 'timeout:408' 'error:500' 'success:200' 'success:200' 'success:200'}}",
+    "fixedDelayMilliseconds": "{{randomInt 50 500}}",
+    "jsonBody": {
+      "{{#eq response.status '200'}}product_id{{else}}error{{/eq}}": "{{#eq response.status '200'}}{{request.path.1}}{{else}}Service temporarily unavailable{{/eq}}",
+      "{{#eq response.status '200'}}available_quantity{{else}}code{{/eq}}": "{{#eq response.status '200'}}{{randomInt 0 100}}{{else}}{{#eq response.status '408'}}TIMEOUT{{else}}INTERNAL_ERROR{{/eq}}{{/eq}}",
+      "{{#eq response.status '200'}}warehouse_id{{/eq}}": "{{#eq response.status '200'}}wh-{{randomValue length=6 type='ALPHANUMERIC'}}{{/eq}}",
+      "timestamp": "{{now format='yyyy-MM-dd''T''HH:mm:ss.SSSZ'}}"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

@@ -17,9 +17,11 @@ services:
       - DB_PASSWORD=postgres
       - DB_NAME=ftapi
       - KAFKA_BROKERS=kafka:9092
+      - WAREHOUSE_URL=http://wiremock:8080
     depends_on:
       - postgres
       - kafka
+      - wiremock
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
       interval: 30s
@@ -56,6 +58,7 @@ services:
         interval: 10s
         timeout: 5s
         retries: 5
+  
   kafka:
     image: confluentinc/cp-kafka:7.3.0
     ports:
@@ -76,6 +79,16 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  wiremock:
+    image: wiremock/wiremock:2.35.0
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./wiremock:/home/wiremock
+    command: 
+      - --verbose
+      - --global-response-templating
       
 volumes:
   postgres-data:

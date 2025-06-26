@@ -13,6 +13,7 @@ type Config struct {
 	Env 	string
 	DB DBConfig
 	Kafka KafkaConfig
+	WarehouseURL string
 }
 
 // DBConfig holds the database configuration
@@ -72,6 +73,7 @@ func Load() (*Config, error) {
 			OrdersTopic:  getEnv("KAFKA_ORDERS_TOPIC", "orders"),
 			ConsumerGroup: getEnv("KAFKA_CONSUMER_GROUP", "orders-consumer"),
 		},
+		WarehouseURL: getEnv("WAREHOUSE_URL", "http://localhost:8081"),
 	}, nil
 }
 

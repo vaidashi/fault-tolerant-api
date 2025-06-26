@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "/api/shipments",
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": "$.order_id"
+      }
+    ]
+  },
+  "response": {
+    "status": "{{randomValue 'success:201' 'error:500' 'timeout:408' 'success:201' 'success:201' 'success:201'}}",
+    "fixedDelayMilliseconds": "{{randomInt 100 1000}}",
+    "jsonBody": {
+      "{{#eq response.status '201'}}shipment_id{{else}}error{{/eq}}": "{{#eq response.status '201'}}ship-{{randomValue length=8 type='ALPHANUMERIC'}}{{else}}Failed to create shipment{{/eq}}",
+      "{{#eq response.status '201'}}order_id{{else}}code{{/eq}}": "{{#eq response.status '201'}}{{jsonPath request.body '$.order_id'}}{{else}}{{#eq response.status '408'}}TIMEOUT{{else}}INTERNAL_ERROR{{/eq}}{{/eq}}",
+      "{{#eq response.status '201'}}status{{/eq}}": "{{#eq response.status '201'}}PENDING{{/eq}}",
+      "{{#eq response.status '201'}}tracking_number{{/eq}}": "{{#eq response.status '201'}}TRK{{randomValue length=10 type='ALPHANUMERIC'}}{{/eq}}",
+      "timestamp": "{{now format='yyyy-MM-dd''T''HH:mm:ss.SSSZ'}}"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

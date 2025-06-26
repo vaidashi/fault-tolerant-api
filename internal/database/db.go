@@ -103,6 +103,20 @@ func (d *Database) RunMigrations() error {
 
     CREATE INDEX IF NOT EXISTS idx_dlq_status ON dead_letter_messages(status);
     CREATE INDEX IF NOT EXISTS idx_dlq_aggregate ON dead_letter_messages(aggregate_type, aggregate_id);
+
+	-- Shipments table for tracking order shipments
+    CREATE TABLE IF NOT EXISTS shipments (
+        id VARCHAR(50) PRIMARY KEY,
+        order_id VARCHAR(50) NOT NULL,
+        shipment_id VARCHAR(50) NOT NULL,
+        tracking_number VARCHAR(50),
+        status VARCHAR(20) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_shipments_order_id ON shipments(order_id);
+    CREATE INDEX IF NOT EXISTS idx_shipments_status ON shipments(status);
 	`
 
 	_, err := d.DB.Exec(schema)
