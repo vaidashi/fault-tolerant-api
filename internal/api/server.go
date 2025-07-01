@@ -16,6 +16,7 @@ import (
 	"github.com/vaidashi/fault-tolerant-api/internal/handlers"
 	"github.com/vaidashi/fault-tolerant-api/pkg/kafka"
 	"github.com/vaidashi/fault-tolerant-api/pkg/retry"
+	"github.com/vaidashi/fault-tolerant-api/internal/clients"
 )
 
 type Server struct {
@@ -32,6 +33,9 @@ type Server struct {
 	kafkaConsumer *kafka.Consumer
 	dlqRepo *repository.DeadLetterRepository
 	deadLetterProcessor *outbox.DeadLetterProcessor
+	warehouseClient *clients.WarehouseClient
+	shipmentRepo *repository.ShipmentRepository
+	shipmentService *service.ShipmentService
 }
 
 // NewServer creates a new API server with the given configuration and logger.
@@ -50,11 +54,15 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 		logger.Error("Failed to run database migrations", "error", err)
 		panic(err)
 	}
+
+	// Initialize warehouse client
+	warehouseClient := clients.NewWarehouseClient(cfg.WarehouseURL, logger)
 	
 	// Initialize repositories
 	orderRepo := repository.NewOrderRepository(db, logger)
 	outboxRepo := repository.NewOutboxRepository(db, logger)
 	dlqRepo := repository.NewDeadLetterRepository(db, logger)
+	shipmentRepo := repository.NewShipmentRepository(db, logger)
 
 	// Initialize Kafka producer
     kafkaProducer, err := kafka.NewProducer(cfg.Kafka.Brokers, logger)
@@ -66,6 +74,7 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 
 	// Initialize services
 	orderService := service.NewOrderService(orderRepo, outboxRepo, logger)
+	shipmentService := service.NewShipmentService(shipmentRepo, orderRepo, outboxRepo, warehouseClient, logger)
 
 	// Initialize outbox processor
 	backoffStrategy := retry.NewDefaultExponentialBackoff()
@@ -145,6 +154,9 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 		kafkaConsumer: kafkaConsumer,
 		dlqRepo: dlqRepo,
 		deadLetterProcessor: deadLetterProcessor,
+		warehouseClient: warehouseClient,
+		shipmentRepo: shipmentRepo,
+		shipmentService: shipmentService,
 	}
 	
 	server.setupRoutes()
@@ -218,6 +230,12 @@ func (s *Server) setupRoutes() {
     admin.HandleFunc("/dead-letters", s.getDeadLettersHandler).Methods(http.MethodGet)
     admin.HandleFunc("/dead-letters/{id}/retry", s.retryDeadLetterHandler).Methods(http.MethodPost)
     admin.HandleFunc("/dead-letters/{id}/discard", s.discardDeadLetterHandler).Methods(http.MethodPost)
+
+	// Shipment endpoints
+	api.HandleFunc("/orders/{id}/shipments", s.createShipmentHandler).Methods(http.MethodPost)
+	api.HandleFunc("/orders/{id}/shipments", s.getShipmentsForOrderHandler).Methods(http.MethodGet)
+	api.HandleFunc("/shipments/{id}", s.getShipmentHandler).Methods(http.MethodGet)
+	api.HandleFunc("/shipments/{id}/sync", s.syncShipmentHandler).Methods(http.MethodPost)
 }
 
 // Middleware for logging requests
