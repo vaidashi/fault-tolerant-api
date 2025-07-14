@@ -11,7 +11,7 @@ type TokenBucket struct {
 	maxTokens float64
 	refillRate float64
 	lastRefillTime time.Time
-	mutex sync.Mutex
+	mutex sync.RWMutex
 }
 
 // NewTokenBucket creates a new token bucket rate limiter
@@ -82,4 +82,17 @@ func (tb *TokenBucket) Available() float64 {
 	available := min(tb.maxTokens, tb.tokens+newTokens)
 	
 	return available
+}
+
+// Add these methods to your rate limiter struct
+func (tb *TokenBucket) MaxTokens() float64 {
+    tb.mutex.RLock()
+    defer tb.mutex.RUnlock()
+    return tb.maxTokens
+}
+
+func (tb *TokenBucket) RefillRate() float64 {
+    tb.mutex.RLock()
+    defer tb.mutex.RUnlock()
+    return tb.refillRate
 }

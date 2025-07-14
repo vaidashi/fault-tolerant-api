@@ -17,6 +17,7 @@ import (
 	"github.com/vaidashi/fault-tolerant-api/pkg/kafka"
 	"github.com/vaidashi/fault-tolerant-api/pkg/retry"
 	"github.com/vaidashi/fault-tolerant-api/internal/clients"
+	"github.com/vaidashi/fault-tolerant-api/pkg/middleware"
 )
 
 type Server struct {
@@ -36,6 +37,8 @@ type Server struct {
 	warehouseClient *clients.WarehouseClient
 	shipmentRepo *repository.ShipmentRepository
 	shipmentService *service.ShipmentService
+	rateLimiter *middleware.RateLimiterMiddleware
+	endpointRateLimiter *middleware.EndpointRateLimiterMiddleware
 }
 
 // NewServer creates a new API server with the given configuration and logger.
@@ -133,6 +136,26 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 	// Register event handlers for Kafka consumer
     orderEventsHandler := handlers.NewOrderEventsHandler(logger)
     kafkaConsumer.RegisterHandler(cfg.Kafka.OrdersTopic, orderEventsHandler)
+
+	// Initialize rate limiters
+	rateLimiterConfig := &middleware.RateLimiterConfig{
+		GlobalMaxTokens:   100,
+		GlobalMaxRate:     20,  // 20 tokens per second
+		GlobalMinRate:     5,   // 5 tokens per second when under high load
+		GlobalThreshold:   0.7, // Start adapting at 70% load
+		IPMaxTokens:       20,
+		IPRefillRate:      1,   // 1 token per second per IP
+		TrustForwardedFor: true,
+	}
+
+	rateLimiter := middleware.NewRateLimiterMiddleware(rateLimiterConfig, logger)
+	
+	// Initialize endpoint rate limiter
+	endpointRateLimiter := middleware.NewEndpointRateLimiterMiddleware(50, 10, logger)
+	
+	// Configure specific endpoint limits
+	endpointRateLimiter.SetLimit("POST:/api/v1/orders", 10, 2)       // 2 orders/second
+	endpointRateLimiter.SetLimit("POST:/api/v1/orders/*/shipments", 5, 1) // 1 shipment/second
 	
 	server := &Server{
 		router: r,
@@ -157,6 +180,8 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 		warehouseClient: warehouseClient,
 		shipmentRepo: shipmentRepo,
 		shipmentService: shipmentService,
+		rateLimiter: rateLimiter,
+		endpointRateLimiter: endpointRateLimiter,
 	}
 	
 	server.setupRoutes()
@@ -183,6 +208,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Stop the processors
     s.outboxProcessor.Stop()
 	s.deadLetterProcessor.Stop()
+
+	// Stop rate limiters
+	s.rateLimiter.Stop()
     
     // Stop the Kafka consumer
     if s.kafkaConsumer != nil {
@@ -210,6 +238,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) setupRoutes() {
 	// Add middleware for all routes
 	s.router.Use(s.loggingMiddleware)
+	// Add the global rate limiter middleware
+	s.router.Use(s.rateLimiter.Middleware)
+	// Add the endpoint rate limiter middleware
+	s.router.Use(s.endpointRateLimiter.Middleware)
 	
 	// API v1 routes
 	api := s.router.PathPrefix("/api/v1").Subrouter()
@@ -230,6 +262,8 @@ func (s *Server) setupRoutes() {
     admin.HandleFunc("/dead-letters", s.getDeadLettersHandler).Methods(http.MethodGet)
     admin.HandleFunc("/dead-letters/{id}/retry", s.retryDeadLetterHandler).Methods(http.MethodPost)
     admin.HandleFunc("/dead-letters/{id}/discard", s.discardDeadLetterHandler).Methods(http.MethodPost)
+	admin.HandleFunc("/rate-limits", s.getRateLimitsHandler).Methods(http.MethodGet)
+	admin.HandleFunc("/rate-limits/endpoint", s.setEndpointRateLimitHandler).Methods(http.MethodPost)
 
 	// Shipment endpoints
 	api.HandleFunc("/orders/{id}/shipments", s.createShipmentHandler).Methods(http.MethodPost)
