@@ -127,6 +127,17 @@ func (cb *CircuitBreaker) GetState() State {
 	return State(atomic.LoadInt32(&cb.state))
 }
 
+// Reset resets the circuit breaker to closed state
+func (cb *CircuitBreaker) Reset() {
+	atomic.StoreInt32(&cb.state, int32(StateClosed))
+	atomic.StoreInt64(&cb.failureCount, 0)
+	atomic.StoreInt64(&cb.halfOpenCalls, 0)
+	
+	cb.mutex.Lock()
+	cb.lastStateChange = time.Now()
+	cb.mutex.Unlock()
+}
+
 // GetMetrics returns metrics about the circuit breaker
 func (cb *CircuitBreaker) GetMetrics() map[string]interface{} {
 	state := State(atomic.LoadInt32(&cb.state))
@@ -136,7 +147,7 @@ func (cb *CircuitBreaker) GetMetrics() map[string]interface{} {
 	cb.mutex.RUnlock()
 	
 	var stateStr string
-	
+
 	switch state {
 	case StateClosed:
 		stateStr = "closed"
