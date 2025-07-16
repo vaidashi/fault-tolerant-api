@@ -39,6 +39,7 @@ type Server struct {
 	shipmentService *service.ShipmentService
 	rateLimiter *middleware.RateLimiterMiddleware
 	endpointRateLimiter *middleware.EndpointRateLimiterMiddleware
+	gracefulDegradation *middleware.GracefulDegradation
 }
 
 // NewServer creates a new API server with the given configuration and logger.
@@ -91,7 +92,6 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 	outboxProcessor := outbox.NewProcessor(outboxRepo, dlqRepo, logger, processorConfig)
 
 	// Create the dead letter processor
-	    // Initialize dead letter processor
     dlqProcessorConfig := &outbox.DeadLetterProcessorConfig{
         PollingInterval: 30 * time.Second, // Process less frequently than outbox
         BatchSize:       5,
@@ -104,6 +104,7 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
         },
     }
 
+	// Initialize dead letter processor
     deadLetterProcessor := outbox.NewDeadLetterProcessor(dlqRepo, outboxRepo, logger, dlqProcessorConfig)
     
 	// Register message handlers
@@ -149,6 +150,7 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 	}
 
 	rateLimiter := middleware.NewRateLimiterMiddleware(rateLimiterConfig, logger)
+	gracefulDegradation := middleware.NewGracefulDegradation(logger)
 	
 	// Initialize endpoint rate limiter
 	endpointRateLimiter := middleware.NewEndpointRateLimiterMiddleware(50, 10, logger)
@@ -182,6 +184,7 @@ func NewServer(cfg *config.Config, logger logger.Logger) *Server {
 		shipmentService: shipmentService,
 		rateLimiter: rateLimiter,
 		endpointRateLimiter: endpointRateLimiter,
+		gracefulDegradation: gracefulDegradation,
 	}
 	
 	server.setupRoutes()
@@ -238,6 +241,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) setupRoutes() {
 	// Add middleware for all routes
 	s.router.Use(s.loggingMiddleware)
+	// Add graceful degradation middleware
+	s.router.Use(s.gracefulDegradation.Middleware)
 	// Add the global rate limiter middleware
 	s.router.Use(s.rateLimiter.Middleware)
 	// Add the endpoint rate limiter middleware
@@ -264,6 +269,8 @@ func (s *Server) setupRoutes() {
     admin.HandleFunc("/dead-letters/{id}/discard", s.discardDeadLetterHandler).Methods(http.MethodPost)
 	admin.HandleFunc("/rate-limits", s.getRateLimitsHandler).Methods(http.MethodGet)
 	admin.HandleFunc("/rate-limits/endpoint", s.setEndpointRateLimitHandler).Methods(http.MethodPost)
+	admin.HandleFunc("/circuit-breaker", s.getCircuitBreakerStatusHandler).Methods(http.MethodGet)
+	admin.HandleFunc("/circuit-breaker/reset", s.resetCircuitBreakerHandler).Methods(http.MethodPost)
 
 	// Shipment endpoints
 	api.HandleFunc("/orders/{id}/shipments", s.createShipmentHandler).Methods(http.MethodPost)
