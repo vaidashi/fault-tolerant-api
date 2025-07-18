@@ -47,11 +47,11 @@ type Health struct {
 func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
     
-    health := map[string]string{
-        "status":    "ok",
-        "version":   "0.1.0",
-        "timestamp": time.Now().Format(time.RFC3339),
-    }
+    health := make(map[string]interface{})
+    health["status"] = "healthy"
+    health["version"] = "1.0.0"
+    health["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+    
     
     // Check database connectivity
     dbStatus := "connected"
@@ -71,6 +71,12 @@ func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
         kafkaStatus = "not_configured"
     }
     health["kafka"] = kafkaStatus
+
+	// Include rate limiter metrics
+	health["rate_limiter"] = s.rateLimiter.GetMetrics()
+	
+	// Include circuit breaker status
+	health["circuit_breaker"] = s.gracefulDegradation.GetMetrics()
     
     s.respondWithJSON(w, http.StatusOK, ApiResponse{
         Success: true,
